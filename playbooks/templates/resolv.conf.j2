@@ -1,0 +1,4 @@
+# This file is managed by Ansible
+{% for server in dns_nameservers.split(',') %}
+nameserver {{ server }}
+{% endfor %}

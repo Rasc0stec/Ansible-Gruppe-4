@@ -1,0 +1,41 @@
+# inventory_proxmox.yml
+# This is a dynamic inventory configuration for Proxmox.
+# It uses the community.proxmox.proxmox inventory plugin to fetch VMs directly from Proxmox.
+#
+# To use this inventory: ansible-playbook -i inventory_proxmox.yml ...
+
+plugin: community.proxmox.proxmox
+# The API connection details are sourced from environment variables for security.
+# Before running Ansible, you must set these:
+#
+# export PROXMOX_URL=https://your-proxmox-host:8006/
+# export PROXMOX_USER=your-api-user
+# export PROXMOX_TOKEN=your-api-token
+# export PROXMOX_SECRET=your-api-secret
+#
+# Alternatively, you can hardcode them here, but this is NOT recommended.
+# api_url: https://...
+# api_user: ...
+# api_token_id: ...
+# api_token_secret: ...
+
+# We want to construct groups based on the tags applied to the VMs in Proxmox.
+# This allows us to target specific groups of VMs easily.
+keyed_groups:
+  - key: tags
+    prefix: proxmox_tag_
+
+# Create a 'windows' group for any VM with the tag 'windows'.
+# This is where we will define the connection variables for WinRM.
+groups:
+  proxmox_tag_windows:
+    # --- WinRM Connection Settings for Windows Hosts ---
+    ansible_connection: winrm
+    ansible_user: Administrator
+    # The password will be prompted for when running the playbook.
+    ansible_password: "{{ vm_admin_password }}"
+    
+    # --- WinRM Configuration ---
+    # For lab environments using HTTP, we ignore certificate validation.
+    ansible_winrm_server_cert_validation: ignore
+    ansible_winrm_transport: basic

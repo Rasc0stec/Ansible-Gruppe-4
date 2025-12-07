@@ -1,0 +1,7 @@
+---
+# group_vars/all.yml
+
+# Main connection settings for the Ansible Controller to connect to Proxmox.
+# This token needs privileges to create VMs, disks, etc.
+proxmox_api_user: root@pam
+proxmox_token_name: "ansible_master_token" # A descriptive name for the controller's token

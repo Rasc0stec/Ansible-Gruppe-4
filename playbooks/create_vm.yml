@@ -1,0 +1,354 @@
+---
+- name: STAGE 1 - Create Proxmox VM via API
+  hosts: proxmox_host_1
+  gather_facts: false
+
+  vars_prompt:
+    - name: "vault_proxmox_api_secret"
+      prompt: "Enter the Proxmox API Token Secret"
+      private: yes
+    - name: "vmid"
+      prompt: "Enter a unique VM ID"
+      private: no
+      default: "101"
+    - name: "vm_name"
+      prompt: "Enter the desired name for the new VM"
+      private: no
+      default: "new-vm"
+    - name: "hostname"
+      prompt: "Enter the desired hostname for the guest OS"
+      private: no
+      default: "new-vm-host"
+    - name: "vm_ip"
+      prompt: "Enter the IP address the VM will receive from DHCP"
+      private: no
+      default: "192.168.50.210"
+    - name: "vm_type"
+      prompt: "Enter VM type (client/server). This determines disk size"
+      private: no
+      default: "client"
+    - name: "proxmox_node"
+      prompt: "Enter the name of the Proxmox node to deploy to"
+      private: no
+      default: "pve01"
+    - name: "template_name"
+      prompt: "Enter the NAME of the template to clone"
+      private: no
+      default: "ubuntu-template-source"
+    - name: "template_user"
+      prompt: "Enter the default user in the template for initial SSH"
+      private: no
+      default: "ubuntu"
+    - name: "ssh_pub_key"
+      prompt: "Enter the public SSH key to inject into the VM"
+      private: no
+      default: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCpOUa+Fex9IRK0QjPBPFqMkThwIPysEw8tRuRty0Hcy1OecV8rgWtLeFsZvwfe9DKnqiFHqGlmCdRqDj3mXZCQRGe0sivmAZrqG4gLE7RtJPWjcfBWSitMuZzdlzeKdAFxOL1gUVifrWaAEtK8FWb4/toWt9bhG15Zy8oP5IQDzpWPs85NsMFaaa3xBjqPPShfmt0Ua3dhzJU0wwHXp0GylU4hFCMDS9bRm1M/8xhjDjjjPY1lf5dWMf1BQhYAFzH4tm7Ix9kT0FPGIWXeADUJrW9kLIR1pxBh+mLIf6xigJsPY6+hli9YzI/+yym+W5eQZRAT5G7RKs1E9OLWILf7met57EmsdayDs88Wufx+gs/cpWwAb9gHxrYeVG29kxSetuAufI5ihKSNvS/pk4AJTufY3i1eFsG+gjjo9h4Nfx0s3SiqCv7rxHc1HQmCed4Ul0cvPpMRLLwvVesR3jXwPx21tkO9rzra2O+qgtikQBUUScDnUcDgUI25E5evJuMfHTiTqqyul2P8utLJ4udLlFWgpwtQyH0TB8MunLWQXybeh5O0Q5Yd4TKi90lO9hqBRA8UfMKuYomjf30liYrh08NUfMPyGm9et0SOZUXqs31ziAxdKuRjvstXAueVTB5ltsCUq10PXO2YHAuP4K47wUqHtOIJWg7nzncPmLNZHQ== laszlo@Schneider]"
+    - name: "vm_storage_pool"
+      prompt: "Enter the storage pool for the VM disks (e.g., local-lvm, vm-storage)"
+      private: no
+      default: "vm-storage"
+
+  tasks:
+    - name: "Ensure Proxmox connection details are present"
+      ansible.builtin.assert:
+        that:
+          - proxmox_api_user is defined
+          - proxmox_token_name is defined
+          - vault_proxmox_api_secret is defined
+        fail_msg: "Please define 'proxmox_api_user' and 'proxmox_token_name' in your inventory. The 'vault_proxmox_api_secret' will be prompted."
+
+    - name: "Set disk size based on VM type"
+      ansible.builtin.set_fact:
+        disk_size: "{% if vm_type == 'server' %}150G{% else %}75G{% endif %}"
+
+    - name: "Create and configure new KVM guest by cloning a template"
+      community.proxmox.proxmox_kvm:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ vault_proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        timeout: 30
+        node: "{{ proxmox_node }}"
+        clone: "{{ template_name }}"
+        newid: "{{ vmid }}"
+        name: "{{ vm_name }}"
+        agent: 1
+        sshkeys: "{{ ssh_pub_key }}"
+        scsihw: 'virtio-scsi-pci'
+        net:
+          net0: "virtio,bridge=vmbr0"
+        cores: 2
+        memory: 2048
+        state: present
+
+    - name: "Resize the root disk"
+      community.proxmox.proxmox_disk:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ vault_proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        vmid: "{{ vmid }}"
+        disk: scsi0
+        size: "{{ disk_size }}"
+        state: resized
+
+    - name: "Stop the VM to apply disk changes"
+      community.proxmox.proxmox_kvm:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ vault_proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid }}"
+        state: stopped
+
+    - name: "Start the VM to detect new disks"
+      community.proxmox.proxmox_kvm:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ vault_proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid }}"
+        state: started
+
+    - name: "Wait until the VM reports a 'running' state"
+      community.proxmox.proxmox_vm_info:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ vault_proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        vmid: "{{ vmid }}"
+      register: vm_status_result
+      until: "vm_status_result.proxmox_vms is defined and vm_status_result.proxmox_vms | length > 0 and vm_status_result.proxmox_vms[0].status == 'running'"
+      retries: 20
+      delay: 5
+
+
+    - name: "Add the new VM to an in-memory inventory group"
+      ansible.builtin.add_host:
+        name: "{{ vm_ip }}"
+        groups: newly_created_vms
+        ansible_user: "{{ template_user }}"
+        vm_hostname: "{{ hostname }}"
+
+    - name: "Display the new VM's IP address"
+      ansible.builtin.debug:
+        msg: "Successfully created VM '{{ vm_name }}'. Will attempt to connect to IP: {{ vm_ip }} for configuration."
+
+- name: STAGE 2 - Configure and Harden the new VM via SSH
+  hosts: newly_created_vms
+  become: yes
+  gather_facts: false
+
+  vars_prompt:
+    - name: "dns_nameservers"
+      prompt: "Enter comma-separated DNS nameservers"
+      private: no
+      default: "1.1.1.1,8.8.8.8"
+    - name: "localadmin_password"
+      prompt: "Enter password for the 'localadmin' user"
+      private: yes
+      default: "Gruppe3!"
+    - name: "configure_auditd"
+      prompt: "Configure auditd log forwarding? (yes/no)"
+      private: no
+      default: "yes"
+    - name: "log_server_ip"
+      prompt: "Enter IP address of your central log server"
+      private: no
+      default: "192.168.1.250"
+    - name: "configure_nfs"
+      prompt: "Configure an NFS client mount? (yes/no)"
+      private: no
+      default: "no"
+    - name: "nfs_server_ip"
+      prompt: "Enter IP of your NFS server"
+      private: no
+      default: "192.168.1.10"
+    - name: "nfs_share_path"
+      prompt: "Enter the path to the share on the NFS server"
+      private: no
+      default: "/mnt/nfs_share"
+    - name: "nfs_mount_point"
+      prompt: "Enter the local directory to mount the NFS share"
+      private: no
+      default: "/mnt/data"
+    - name: "harden_ssh_to_keys_only"
+      prompt: "Enforce SSH key-only authentication? (yes/no)"
+      private: no
+      default: "no"
+
+  tasks:
+    - name: "Wait for SSH connection to become available"
+      ansible.builtin.wait_for_connection:
+        delay: 15
+        timeout: 300
+
+
+    - name: "Resize the root filesystem to fill the disk"
+      become: yes
+      command: resize2fs /dev/sda1
+
+    - name: "Create data directories on root filesystem"
+      become: yes
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0775'
+      loop:
+        - /data
+        - /data/logs
+        - /data/software
+        - /data/ansible
+
+
+    - name: "Check QEMU Guest Agent version"
+      ansible.builtin.command: qemu-ga --version
+      register: guest_agent_version
+      changed_when: false
+      
+    - name: "Display Guest Agent version"
+      ansible.builtin.debug:
+        var: guest_agent_version.stdout
+
+    - name: "Install required software and hardening tools"
+      ansible.builtin.apt:
+        name: "{{ packages_to_install }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages_to_install:
+          - ufw
+          - fail2ban
+          - vlc
+          - unattended-upgrades
+          - auditd
+          - audispd-plugins
+          - nfs-common
+          
+    - name: "Set hostname for the new VM"
+      ansible.builtin.hostname:
+        name: "{{ vm_hostname }}"
+
+    - name: "Configure /etc/resolv.conf"
+      ansible.builtin.template:
+        src: resolv.conf.j2
+        dest: /etc/resolv.conf
+        mode: '0644'
+
+    - name: "Create the local fallback admin user"
+      ansible.builtin.user:
+        name: "localadmin"
+        comment: "Local Fallback Administrator"
+        groups: "sudo"
+        state: "present"
+        password: "{{ localadmin_password | password_hash('sha512') }}"
+
+    - name: "Configure Firewall (UFW)"
+      community.general.ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    - name: "Allow SSH through firewall"
+      community.general.ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: "Ensure fail2ban service is running"
+      ansible.builtin.service:
+        name: fail2ban
+        state: started
+        enabled: yes
+
+    - name: "Enable unattended upgrades"
+      ansible.builtin.copy:
+        dest: "/etc/apt/apt.conf.d/20auto-upgrades"
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+
+    - name: "Configure Auditd Log Forwarding"
+      when: configure_auditd == 'yes'
+      block:
+        - name: "Ensure /etc/audisp/plugins.d/ directory exists"
+          ansible.builtin.file:
+            path: /etc/audisp/plugins.d/
+            state: directory
+            mode: '0755'
+        - name: "Configure auditd to send logs to syslog"
+          ansible.builtin.lineinfile:
+            path: /etc/audisp/plugins.d/syslog.conf
+            regexp: '^active = .*'
+            line: 'active = yes'
+            create: yes
+          notify: Restart auditd
+
+        - name: "Configure rsyslog to forward audit logs to remote server"
+          ansible.builtin.copy:
+            dest: /etc/rsyslog.d/60-audit.conf
+            content: "*.* @@{{ log_server_ip }}:514"
+          notify: Restart rsyslog
+
+    - name: "Configure NFS Client Mount"
+      when: configure_nfs == 'yes'
+      block:
+        - name: "Create NFS mount point directory"
+          ansible.builtin.file:
+            path: "{{ nfs_mount_point }}"
+            state: directory
+            mode: '0755'
+
+        - name: "Mount NFS share permanently via /etc/fstab"
+          ansible.builtin.mount:
+            src: "{{ nfs_server_ip }}:{{ nfs_share_path }}"
+            path: "{{ nfs_mount_point }}"
+            fstype: nfs
+            opts: defaults,hard,intr
+            state: mounted
+
+    - name: "Harden SSH Daemon"
+      block:
+        - name: "Disallow root login over SSH"
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PermitRootLogin'
+            line: 'PermitRootLogin no'
+            validate: 'sshd -t -f %s'
+          notify: Restart ssh
+
+        - name: "(Optional) Disallow password authentication over SSH"
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PasswordAuthentication'
+            line: 'PasswordAuthentication no'
+            validate: 'sshd -t -f %s'
+          when: harden_ssh_to_keys_only == 'yes'
+          notify: Restart ssh
+      rescue:
+        - name: "SSH config validation failed, restoring from backup"
+          ansible.builtin.fail:
+            msg: "Failed to validate sshd_config. The original file is preserved in a backup file in the same directory."
+
+  handlers:
+    - name: Restart ssh
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
+
+    - name: Restart auditd
+      ansible.builtin.service:
+        name: auditd
+        state: restarted
+        
+    - name: Restart rsyslog
+      ansible.builtin.service:
+        name: rsyslog
+        state: restarted

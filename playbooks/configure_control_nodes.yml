@@ -1,0 +1,80 @@
+---
+- name: Configure Windows 11 Control Nodes
+  hosts: proxmox_tag_control-node
+  gather_facts: false
+
+  vars_prompt:
+    - name: "vm_admin_password"
+      prompt: "Enter the Administrator password for the Windows VMs"
+      private: yes
+
+  tasks:
+    - name: "Check WinRM connection"
+      ansible.windows.win_ping:
+      register: ping_result
+      until: ping_result.ping == 'pong'
+      retries: 30
+      delay: 10
+      ignore_errors: yes
+
+    - name: "Fail if WinRM connection failed"
+      ansible.builtin.fail:
+        msg: "Could not connect to the Windows host via WinRM. Please check network, firewall, and credentials."
+      when: ping_result.ping != 'pong'
+
+    - name: "Gather Windows facts"
+      ansible.windows.setup_facts:
+
+    - name: "Enable WSL and Virtual Machine Platform features"
+      ansible.windows.win_feature:
+        name:
+          - Microsoft-Windows-Subsystem-Linux
+          - VirtualMachinePlatform
+        state: present
+      register: feature_install_result
+
+    - name: "Reboot to apply feature changes if needed"
+      ansible.windows.win_reboot:
+      when: feature_install_result.reboot_required
+
+    - name: "Set WSL default version to 2"
+      ansible.windows.win_shell: wsl --set-default-version 2
+      args:
+        # This command might not produce output, which is fine
+        warn: false
+
+    - name: "Install Ubuntu distribution for WSL"
+      ansible.windows.win_shell: wsl --install -d Ubuntu
+      args:
+        # This can take a significant amount of time
+        async: 300 # Timeout in seconds
+        poll: 10 # Check every 10 seconds
+        warn: false # The command might not produce stdout
+      register: wsl_install_job
+
+    - name: "Wait for WSL installation to complete"
+      ansible.windows.win_async_status:
+        jid: "{{ wsl_install_job.jid }}"
+      register: job_result
+      until: job_result.finished
+      retries: 30 # 30 retries * 10s poll = 300s total wait
+      delay: 10
+      
+    - name: "Update apt cache in WSL"
+      ansible.windows.win_shell: wsl.exe -d Ubuntu -e apt-get update
+
+    - name: "Install Python Pip and Venv in WSL"
+      ansible.windows.win_shell: wsl.exe -d Ubuntu -e apt-get install -y python3-pip python3-venv
+    
+    - name: "Create Ansible virtual environment in WSL for the default user"
+      ansible.windows.win_shell: wsl.exe -d Ubuntu -e python3 -m venv /root/ansible-venv
+
+    - name: "Install Ansible into the virtual environment"
+      ansible.windows.win_shell: wsl.exe -d Ubuntu -e /root/ansible-venv/bin/pip install ansible
+      
+    - name: "Display completion message"
+      ansible.builtin.debug:
+        msg: |
+          Successfully configured {{ ansible_host }}.
+          WSL, Ubuntu, and Ansible are now installed.
+          The control node is ready for use.

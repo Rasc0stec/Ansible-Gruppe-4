@@ -1,0 +1,6 @@
+---
+all:
+  hosts:
+    proxmox_server:
+      ansible_connection: local
+...

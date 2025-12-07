@@ -1,0 +1,209 @@
+---
+- name: STAGE 1 - Create Windows VM from Template (SSH/Cloud-Init)
+  hosts: proxmox_host_1
+  gather_facts: false
+
+  vars_prompt:
+    - name: "vmid"
+      prompt: "Enter a unique VM ID for the new Windows VM (e.g., 201, 202)"
+      private: no
+      default: "201"
+    - name: "vm_name"
+      prompt: "Enter the desired name for the new Windows VM"
+      private: no
+      default: "win-client01"
+    - name: "hostname"
+      prompt: "Enter the desired guest hostname for the Windows OS"
+      private: no
+      default: "win-client01"
+    - name: "proxmox_node"
+      prompt: "Enter the name of the Proxmox node to deploy to"
+      private: no
+      default: "pve01"
+    - name: "template_name"
+      prompt: "Enter the NAME of the Windows template (with OpenSSH + Cloudbase-Init) to clone"
+      private: no
+      default: "win11-cloudinit-template" # IMPORTANT: Update with your actual template name
+    - name: "vm_storage_pool"
+      prompt: "Enter the storage pool for the VM disks (e.g., local-lvm, vm-storage)"
+      private: no
+      default: "vm-storage"
+    - name: "admin_username"
+      prompt: "Enter the local admin username configured in the Windows template for Cloud-Init/SSH"
+      private: no
+      default: "AnsibleAdmin" # User you created in the template
+    - name: "admin_password"
+      prompt: "Enter the password for the local admin user (Ansible will use this for initial Cloud-Init setup)"
+      private: yes # Make this private as it's sensitive
+      default: "YourSecureTemplatePassword" # WARNING: Change this! Use Ansible Vault in production!
+    - name: "ssh_pub_key"
+      prompt: "Enter the public SSH key to inject into the VM via Cloud-Init"
+      private: no
+      default: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCpOUa+Fex9IRK0QjPBPFqMkThwIPysEw8tRuRty0Hcy1OecV8rgWtLeFsZvwfe9DKnqiFHqGlmCdRqDj3mXZCQRGe0sivmAZrqG4gLE7RtJPWjcfBWSitMuZzdlzeKdAFxOL1gUVifrWaAEtK8FWb4/toWt9bhG15Zy8oP5IQDzpWPs85NsMFaaa3xBjqPPShfmt0Ua3dhzJU0wwHXp0GylU4hFCMDS9bRm1M/8xhjDjjjPY1lf5dWMf1BQhYAFzH4tm7Ix9kT0FPGIWXeADUJrW9kLIR1pxBh+mLIf6xigJsPY6+hli9YzI/+yym+W5eQZRAT5G7RKs1E9OLWILf7met57EmsdayDs88Wufx+gs/cpWwAb9gHxrYeVG29kxSetuAufI5ihKSNvS/pk4AJTufY3i1eFsG+gjjo9h4Nfx0s3SiqCv7rxHc1HQmCed4Ul0cvPpMRLLwvVesR3jXwPx21tkO9rzra2O+qgtikQBUUScDnUcDgUI25E5evJuMfHTiTqqyul2P8utLJ4udLlFWgpwtQyH0TB8MunLWQXybeh5O0Q5Yd4TKi90lO9hqBRA8UfMKuYomjf30liYrh08NUfMPyGm9et0SOZUXqs31ziAxdKuRjvstXAueVTB5ltsCUq10PXO2YHAuP4K47wUqHtOIJWg7nzncPmLNZHQ== laszlo@Schneider"
+
+  tasks:
+    - name: "Ensure Proxmox connection details are present"
+      ansible.builtin.assert:
+        that:
+          - proxmox_api_user is defined
+          - proxmox_token_name is defined
+          - proxmox_api_secret is defined
+        fail_msg: "Please define 'proxmox_api_user', 'proxmox_token_name', and 'proxmox_api_secret' in your inventory.yml file."
+
+    - name: "Create and configure new KVM guest by cloning Windows template with Cloud-Init"
+      community.proxmox.proxmox_kvm:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        timeout: 120 # Increased timeout for Windows cloning/first boot
+        node: "{{ proxmox_node }}"
+        clone: "{{ template_name }}"
+        newid: "{{ vmid }}"
+        name: "{{ vm_name }}"
+        agent: 1 # Essential for communication
+        cores: 2
+        memory: 4096 # Windows needs more memory
+        scsihw: 'virtio-scsi-pci'
+        net:
+          net0: "virtio,bridge=vmbr0" # Adjust bridge as needed
+        state: present
+        # Cloud-Init parameters for Windows
+        # Cloudbase-Init on Windows interprets these parameters.
+        # It will create the 'admin_username' user and set the password.
+        # It will also inject the SSH key for this user.
+        ciuser: "{{ admin_username }}"
+        cipassword: "{{ admin_password }}"
+        sshkeys: "{{ ssh_pub_key }}"
+        ipconfig: "ip=dhcp" # Start with DHCP; can be made static later if needed
+
+    - name: "Resize the root disk (Windows)"
+      community.proxmox.proxmox_disk:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        vmid: "{{ vmid }}"
+        disk: scsi0 # Adjust disk as needed, often scsi0 for VirtIO
+        size: "100G" # Default size for Windows VM
+        state: resized
+
+    - name: "Stop the VM to apply disk changes"
+      community.proxmox.proxmox_kvm:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid }}"
+        state: stopped
+
+    - name: "Start the VM to detect new disks and process Cloud-Init"
+      community.proxmox.proxmox_kvm:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vmid }}"
+        state: started
+
+    - name: "Wait for QEMU Guest Agent to report IP"
+      community.proxmox.proxmox_vm_info:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        vmid: "{{ vmid }}"
+      register: vm_info
+      until: "vm_info.proxmox_vms is defined and vm_info.proxmox_vms | length > 0 and vm_info.proxmox_vms[0].ip is defined"
+      retries: 60 # Increased retries for Windows boot time
+      delay: 10 # Check every 10 seconds
+
+    - name: "Extract reported IP address"
+      ansible.builtin.set_fact:
+        reported_ip: "{{ vm_info.proxmox_vms[0].ip }}"
+
+    - name: "Add the new Windows VM to an in-memory inventory group"
+      ansible.builtin.add_host:
+        name: "{{ reported_ip }}"
+        groups: newly_created_windows_vms
+        ansible_user: "{{ admin_username }}"
+        ansible_connection: "ssh"
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no' # For lab environments, bypass host key checking
+        ansible_ssh_private_key_file: "~/.ssh/id_rsa" # Assuming your private key is here
+        vm_hostname: "{{ hostname }}"
+
+    - name: "Display the new VM's reported IP address"
+      ansible.builtin.debug:
+        msg: "Successfully created Windows VM '{{ vm_name }}'. Reported IP is {{ reported_ip }}. Will connect for configuration via SSH."
+
+# ========================================================================================
+# STAGE 2 - Configure the new Windows VM via SSH
+# This part will perform Windows-specific configuration using PowerShell over SSH.
+# ========================================================================================
+
+- name: STAGE 2 - Configure Windows VM via SSH
+  hosts: newly_created_windows_vms
+  gather_facts: false # Windows facts can be slow, gather them only if needed
+  
+  tasks:
+    - name: "Wait for SSH connection to become available on Windows VM"
+      ansible.builtin.wait_for_connection:
+        delay: 30 # Give more time for Windows SSH server to start
+        timeout: 600
+
+    - name: "Verify hostname using win_shell (PowerShell over SSH)"
+      ansible.windows.win_shell: hostname
+      register: current_hostname
+      changed_when: false
+    
+    - name: "Display current hostname"
+      ansible.builtin.debug:
+        msg: "Current hostname is {{ current_hostname.stdout }}"
+
+    - name: "Set the computer hostname if necessary"
+      ansible.windows.win_hostname:
+        name: "{{ vm_hostname }}"
+      register: hostname_result
+
+    - name: "Reboot the machine to apply hostname change (if required)"
+      ansible.windows.win_reboot:
+      when: hostname_result.reboot_required
+
+    - name: "Install Chocolatey (Windows Package Manager)"
+      # This task needs to run after a potential reboot from hostname change
+      ansible.windows.win_powershell: |      
+        Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+      args:
+        chdir: C:\temp # Ensure a writable directory
+      register: install_chocolatey
+      changed_when: "install_chocolatey.rc == 0 and 'Installing Chocolatey' in install_chocolatey.stdout"
+      # This assumes Chocolatey isn't already installed on the template.
+      # If it is, this task will report 'changed' unnecessarily.
+      # A check for existing Chocolatey could be added for idempotency.
+      
+    - name: "Install Git via Chocolatey"
+      ansible.windows.win_chocolatey:
+        name: git
+        state: present
+      register: install_git
+
+    - name: "Display Git installation status"
+      ansible.builtin.debug:
+        msg: "Git installation status: {{ install_git.msg }}"
+
+    - name: "Ensure SSH service is running and set to automatic"
+      ansible.windows.win_service:
+        name: sshd
+        state: started
+        start_mode: auto
+
+    - name: "Debug message after base Windows setup"
+      ansible.builtin.debug:
+        msg: "Basic configuration of {{ inventory_hostname }} completed. Git and OpenSSH are installed, and hostname is set."

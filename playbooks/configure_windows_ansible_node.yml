@@ -1,0 +1,85 @@
+---
+- name: Configure Windows VM as Ansible Control Node
+  hosts: newly_created_windows_vms # This group will contain the VMs created by create_windows_ssh_vm.yml
+  gather_facts: false
+  
+  vars:
+    python_version: "3.12" # Matches the user's WSL Python version
+    ansible_venv_path: "C:\\ansible_venv" # Path for the virtual environment on Windows
+    ansible_admin_username: "{{ admin_username }}" # From previous playbook or defined in inventory
+
+  tasks:
+    - name: "Ensure Python {{ python_version }} is installed via Chocolatey"
+      ansible.windows.win_chocolatey:
+        name: "python3" # Chocolatey package for Python
+        version: "{{ python_version }}"
+        state: present
+      register: install_python
+
+    - name: "Create Python virtual environment for Ansible"
+      ansible.windows.win_powershell:
+        script: |
+          if (-not (Test-Path "{{ ansible_venv_path }}")) {
+              python -m venv "{{ ansible_venv_path }}"
+          }
+      args:
+        chdir: C:\
+      register: create_venv
+      changed_when: "'created virtual environment' in create_venv.stdout"
+
+    - name: "Install Ansible and required Python packages into the virtual environment"
+      ansible.windows.win_powershell:
+        script: |
+          # Activate virtual environment and install packages
+          & "{{ ansible_venv_path }}\Scripts\Activate.ps1"
+          pip install --upgrade pip
+          pip install ansible-core==2.20.0 proxmoxer==2.2.0 certifi==2025.11.12 cffi==2.0.0 charset-normalizer==3.4.4 cryptography==46.0.3 idna==3.11 Jinja2==3.1.6 MarkupSafe==3.0.3 packaging==25.0 passlib==1.7.4 pycparser==2.23 PyYAML==6.0.3 requests==2.32.5 resolvelib==1.2.1 urllib3==2.6.0
+      register: install_ansible_deps
+      changed_when: "'Successfully installed' in install_ansible_deps.stdout"
+      environment:
+        # Ensure Python from venv is prioritized
+        Path: "{{ ansible_venv_path }}\Scripts;{{ ansible_venv_path }}\bin;$env:Path"
+
+    - name: "Verify Ansible installation"
+      ansible.windows.win_powershell:
+        script: |
+          & "{{ ansible_venv_path }}\Scripts\Activate.ps1"
+          ansible --version
+      register: ansible_version_check
+      changed_when: false
+    
+    - name: "Display Ansible version"
+      ansible.builtin.debug:
+        msg: "Ansible on Windows VM: {{ ansible_version_check.stdout }}"
+
+    - name: "Create placeholder ansible.cfg for the new control node"
+      ansible.windows.win_file:
+        path: "{{ ansible_venv_path }}\ansible.cfg"
+        state: touch
+      register: touch_ansible_cfg
+
+    - name: "Add basic content to ansible.cfg"
+      ansible.windows.win_lineinfile:
+        path: "{{ ansible_venv_path }}\ansible.cfg"
+        line: |
+          [defaults]
+          inventory = {{ ansible_venv_path }}\inventory.yml
+          collections_paths = {{ ansible_venv_path }}\collections
+          host_key_checking = False
+      register: configure_ansible_cfg
+
+    - name: "Create placeholder inventory.yml for the new control node"
+      ansible.windows.win_file:
+        path: "{{ ansible_venv_path }}\inventory.yml"
+        state: touch
+      register: touch_inventory_yml
+
+    - name: "Inform about manual steps for inventory and collections"
+      ansible.builtin.debug:
+        msg: |
+          Ansible and its dependencies are now installed in {{ ansible_venv_path }}.
+          You need to:
+          1. Manually add your Proxmox host details to {{ ansible_venv_path }}\inventory.yml.
+          2. Manually copy any required Ansible collections (e.g., community.proxmox) to {{ ansible_venv_path }}\collections.
+          3. Ensure your SSH private key is available on this Windows control node (e.g., in C:\Users\{{ ansible_admin_username }}\.ssh\id_rsa).
+          4. To run Ansible, open PowerShell, activate the venv: & "{{ ansible_venv_path }}\Scripts\Activate.ps1", then use ansible-playbook.

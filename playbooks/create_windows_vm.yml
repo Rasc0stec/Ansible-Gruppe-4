@@ -1,0 +1,116 @@
+---
+- name: STAGE 1 - Create Windows VM from Template
+  hosts: proxmox_host_1
+  gather_facts: false
+
+  vars_prompt:
+    - name: "vmid"
+      prompt: "Enter a unique VM ID for the new Windows VM"
+      private: no
+      default: "201"
+    - name: "vm_name"
+      prompt: "Enter the desired name for the new Windows VM"
+      private: no
+      default: "win-vm"
+    - name: "hostname"
+      prompt: "Enter the desired guest hostname for the Windows OS"
+      private: no
+      default: "win-host"
+    - name: "proxmox_node"
+      prompt: "Enter the name of the Proxmox node to deploy to"
+      private: no
+      default: "pve01"
+    - name: "template_name"
+      prompt: "Enter the NAME of the Windows template to clone"
+      private: no
+      default: "win11-template" # TBC - update with your actual template name
+    - name: "vm_storage_pool"
+      prompt: "Enter the storage pool for the VM disks"
+      private: no
+      default: "vm-storage"
+    - name: "vm_ip_address"
+      prompt: "Enter the STATIC IP address to assign to the Windows VM"
+      private: no
+      default: "192.168.50.220"
+
+  tasks:
+    - name: "Clone Windows template to a new VM"
+      community.proxmox.proxmox_kvm:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        timeout: 60
+        node: "{{ proxmox_node }}"
+        clone: "{{ template_name }}"
+        newid: "{{ vmid }}"
+        name: "{{ vm_name }}"
+        agent: 1 # Essential for communication
+        cores: 2
+        memory: 4096
+        state: present
+
+    - name: "Wait for QEMU Guest Agent to report IP"
+      community.proxmox.proxmox_vm_info:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        vmid: "{{ vmid }}"
+      register: vm_info
+      until: "vm_info.proxmox_vms is defined and vm_info.proxmox_vms | length > 0 and vm_info.proxmox_vms[0].ip is defined"
+      retries: 30
+      delay: 10
+      
+    - name: "Extract reported IP address"
+      ansible.builtin.set_fact:
+        reported_ip: "{{ vm_info.proxmox_vms[0].ip }}"
+
+    - name: "Add the new Windows VM to an in-memory inventory group"
+      ansible.builtin.add_host:
+        name: "{{ reported_ip }}"
+        groups: newly_created_windows_vms
+        ansible_user: "ansible-admin" # The local admin user from your template
+        ansible_password: "YourWindowsAdminPassword" # WARNING: Use Vault in production
+        ansible_connection: "winrm"
+        ansible_winrm_server_cert_validation: "ignore"
+        ansible_winrm_transport: "basic"
+        vm_hostname: "{{ hostname }}"
+        static_ip_info:
+          address: "{{ vm_ip_address }}"
+          netmask: "255.255.255.0"
+          gateway: "192.168.50.1"
+
+    - name: "Display the new VM's reported IP address"
+      ansible.builtin.debug:
+        msg: "Successfully created VM '{{ vm_name }}'. Reported IP is {{ reported_ip }}. Will connect for configuration."
+
+# ========================================================================================
+# STAGE 2 - Configure the new Windows VM via WinRM
+# This part will be developed next.
+# ========================================================================================
+
+- name: STAGE 2 - Configure Windows VM
+  hosts: newly_created_windows_vms
+  gather_facts: false
+  
+  tasks:
+    - name: "Wait for WinRM connection to become available"
+      ansible.builtin.wait_for_connection:
+        delay: 30
+        timeout: 600
+
+    - name: "Set the computer hostname"
+      community.windows.win_hostname:
+        name: "{{ vm_hostname }}"
+      register: hostname_result
+
+    - name: "Reboot the machine to apply hostname change"
+      community.windows.win_reboot:
+      when: hostname_result.reboot_required
+
+    - name: "Debug message after setup"
+      ansible.builtin.debug:
+        msg: "Successfully configured hostname on {{ inventory_hostname }}. Further setup can be added here."

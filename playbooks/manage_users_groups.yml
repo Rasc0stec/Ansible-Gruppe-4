@@ -1,0 +1,78 @@
+---
+- name: Manage Proxmox Users and Groups
+  hosts: proxmox_host_1
+  gather_facts: false
+
+  vars_prompt:
+    - name: "management_target"
+      prompt: "What do you want to manage? (user / group)"
+      private: no
+      default: "user"
+
+  # ------------------ GROUP MANAGEMENT ------------------
+    - name: "group_name"
+      prompt: "Enter the name of the group"
+      private: no
+      when: management_target == 'group'
+
+    - name: "group_state"
+      prompt: "State of the group? (present / absent)"
+      private: no
+      default: "present"
+      when: management_target == 'group'
+
+  # ------------------- USER MANAGEMENT ------------------
+    - name: "user_name"
+      prompt: "Enter the user ID (e.g., 'testuser@pam', 'newadmin@pve')"
+      private: no
+      when: management_target == 'user'
+
+    - name: "user_password"
+      prompt: "Enter the password for the user"
+      private: yes
+      when: management_target == 'user'
+
+    - name: "user_groups"
+      prompt: "Enter comma-separated groups for the user (e.g., 'PVEAdmin', 'new-group')"
+      private: no
+      default: ""
+      when: management_target == 'user'
+
+    - name: "user_state"
+      prompt: "State of the user? (present / absent)"
+      private: no
+      default: "present"
+      when: management_target == 'user'
+
+  tasks:
+    - name: "Ensure Proxmox connection details are present"
+      ansible.builtin.assert:
+        that:
+          - proxmox_api_user is defined
+          - proxmox_token_name is defined
+          - proxmox_api_secret is defined
+        fail_msg: "Please define 'proxmox_api_user', 'proxmox_token_name', and 'proxmox_api_secret' in your inventory.yml file."
+
+    - name: "Manage Proxmox Group"
+      when: management_target == 'group'
+      community.proxmox.proxmox_group:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        group_name: "{{ group_name }}"
+        state: "{{ group_state }}"
+
+    - name: "Manage Proxmox User"
+      when: management_target == 'user'
+      community.proxmox.proxmox_user:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        user: "{{ user_name }}"
+        password: "{{ user_password }}"
+        groups: "{{ user_groups }}"
+        state: "{{ user_state }}"

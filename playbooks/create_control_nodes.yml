@@ -1,0 +1,138 @@
+---
+- name: Create Windows 11 Ansible Control Nodes (Interactive)
+  hosts: proxmox_server
+  gather_facts: false
+
+  vars:
+    winrm_prepare_script: "{{ lookup('file', '../prepare_windows_for_ansible.ps1') }}"
+
+  vars_prompt:
+      # --- Connection Settings ---
+    - name: "proxmox_host"
+      prompt: "Enter the Proxmox Host IP or FQDN\n(e.g., '192.168.1.10', 'pve.domain.local')"
+      private: no
+      # --- General Settings ---
+    - name: "vault_proxmox_api_secret"
+      prompt: "Enter the Proxmox API Secret for the main controller ({{ proxmox_api_user }})\n(Find this in Proxmox under Datacenter -> Permissions -> API Tokens)"
+      private: yes
+    - name: "win_template_name"
+      prompt: "Enter the NAME of the Windows 11 template to clone\n(e.g., 'win11-23h2-template', 'win11-golden-image')"
+      private: no
+      default: "win11-23h2-template"
+    - name: "proxmox_node"
+      prompt: "Enter the name of the Proxmox node to deploy to\n(e.g., 'pve01', 'proxmox-node-A')"
+      private: no
+      default: "pve01"
+    - name: "start_vmid"
+      prompt: "Enter the starting VMID for the new VMs\n(e.g., 9001). This will be incremented for each of the 4 VMs."
+      private: no
+      default: 9001
+
+      # --- Terminal 1 ---
+    - name: "vm_name_1"
+      prompt: "TERMINAL 1: Enter the desired VM name (e.g., 'win11-terminal-laszlo')"
+      private: no
+    - name: "vm_user_1"
+      prompt: "TERMINAL 1: Enter the username for the Windows account (e.g., 'laszlo')"
+      private: no
+    - name: "vm_password_1"
+      prompt: |
+        TERMINAL 1: Enter the password for user '{{ vm_user_1 }}'.
+        Policy: Min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char.
+      private: yes
+      confirm: yes
+      regex: "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$"
+      
+      # --- Terminal 2 ---
+    - name: "vm_name_2"
+      prompt: "TERMINAL 2: Enter the desired VM name (e.g., 'win11-terminal-patrick')"
+      private: no
+    - name: "vm_user_2"
+      prompt: "TERMINAL 2: Enter the username for the Windows account (e.g., 'patrick')"
+      private: no
+    - name: "vm_password_2"
+      prompt: |
+        TERMINAL 2: Enter the password for user '{{ vm_user_2 }}'.
+        Policy: Min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char.
+      private: yes
+      confirm: yes
+      regex: "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$"
+
+      # --- Terminal 3 ---
+    - name: "vm_name_3"
+      prompt: "TERMINAL 3: Enter the desired VM name (e.g., 'win11-terminal-august')"
+      private: no
+    - name: "vm_user_3"
+      prompt: "TERMINAL 3: Enter the username for the Windows account (e.g., 'august')"
+      private: no
+    - name: "vm_password_3"
+      prompt: |
+        TERMINAL 3: Enter the password for user '{{ vm_user_3 }}'.
+        Policy: Min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char.
+      private: yes
+      confirm: yes
+      regex: "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$"
+
+      # --- Terminal 4 ---
+    - name: "vm_name_4"
+      prompt: "TERMINAL 4: Enter the desired VM name (e.g., 'win11-terminal-nichlas')"
+      private: no
+    - name: "vm_user_4"
+      prompt: "TERMINAL 4: Enter the username for the Windows account (e.g., 'nichlas')"
+      private: no
+    - name: "vm_password_4"
+      prompt: |
+        TERMINAL 4: Enter the password for user '{{ vm_user_4 }}'.
+        Policy: Min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char.
+      private: yes
+      confirm: yes
+      regex: "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$"
+
+  tasks:
+    - name: "Construct list of VMs to create from prompted variables"
+      ansible.builtin.set_fact:
+        nodes_to_create:
+          - { vmid: "{{ start_vmid | int }}",     vm_name: "{{ vm_name_1 }}", user: "{{ vm_user_1 }}", password: "{{ vm_password_1 }}" }
+          - { vmid: "{{ start_vmid | int + 1 }}", vm_name: "{{ vm_name_2 }}", user: "{{ vm_user_2 }}", password: "{{ vm_password_2 }}" }
+          - { vmid: "{{ start_vmid | int + 2 }}", vm_name: "{{ vm_name_3 }}", user: "{{ vm_user_3 }}", password: "{{ vm_password_3 }}" }
+          - { vmid: "{{ start_vmid | int + 3 }}", vm_name: "{{ vm_name_4 }}", user: "{{ vm_user_4 }}", password: "{{ vm_password_4 }}" }
+
+    - name: "Create a Windows 11 Control Node for each user"
+      community.proxmox.proxmox_kvm:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ vault_proxmox_api_secret }}"
+        api_host: "{{ proxmox_host }}"
+        validate_certs: false
+        
+        node: "{{ proxmox_node }}"
+        clone: "{{ win_template_name }}"
+        newid: "{{ item.vmid }}"
+        name: "{{ item.vm_name }}"
+        
+        cores: 2
+        memory: 4096
+        scsihw: 'virtio-scsi-pci'
+        
+        cicustom: |
+          #cloud-config
+          user: "{{ item.user }}"
+          password: "{{ item.password }}"
+          chpasswd: { expire: False }
+          runcmd:
+            - powershell.exe -ExecutionPolicy Bypass -Command "New-Item -Path 'C:\Temp' -ItemType Directory -Force"
+            - powershell.exe -ExecutionPolicy Bypass -Command "Set-Content -Path C:\\Temp\\prepare.ps1 -Value @'
+          {{ winrm_prepare_script | indent(10) }}
+          '@ "
+            - powershell.exe -ExecutionPolicy Bypass -File C:\\Temp\\prepare.ps1
+        
+        agent: 1
+        onboot: yes
+        tags: "windows,control-node"
+        state: present
+      loop: "{{ nodes_to_create }}"
+      register: creation_result
+
+    - name: "Display results of VM creation"
+      ansible.builtin.debug:
+        var: creation_result.results

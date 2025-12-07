@@ -1,0 +1,46 @@
+---
+- name: Manage Proxmox Access Control (RBAC)
+  hosts: proxmox_host_1
+  gather_facts: false
+
+  vars_prompt:
+    - name: "acl_path"
+      prompt: "Enter the path to apply the permission to (e.g., '/', '/vms/101', '/pool/my-pool')"
+      private: no
+      default: "/"
+
+    - name: "target_user_or_group"
+      prompt: "Enter the user or group to grant permissions to (e.g., 'my-group', 'user@pam')"
+      private: no
+
+    - name: "target_role"
+      prompt: "Enter the role to assign (e.g., 'PVEAdmin', 'PVEVMUser', 'NoAccess'). See Proxmox docs for a full list"
+      private: no
+      default: "PVEVMUser"
+
+    - name: "acl_state"
+      prompt: "State of the permission? (present / absent)"
+      private: no
+      default: "present"
+
+  tasks:
+    - name: "Ensure Proxmox connection details are present"
+      ansible.builtin.assert:
+        that:
+          - proxmox_api_user is defined
+          - proxmox_token_name is defined
+          - proxmox_api_secret is defined
+        fail_msg: "Please define 'proxmox_api_user', 'proxmox_token_name', and 'proxmox_api_secret' in your inventory.yml file."
+
+    - name: "Manage Proxmox ACL"
+      community.proxmox.proxmox_acl:
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_api_secret }}"
+        api_host: "{{ ansible_host }}"
+        validate_certs: false
+        
+        path: "{{ acl_path }}"
+        ugid: "{{ target_user_or_group }}"
+        role: "{{ target_role }}"
+        state: "{{ acl_state }}"

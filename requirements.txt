@@ -1,0 +1,20 @@
+# Ansible Core
+ansible-core==2.20.0
+
+# Proxmox-specific libraries
+proxmoxer
+requests
+
+# General dependencies
+passlib
+urllib3
+PyYAML
+Jinja2
+packaging
+MarkupSafe
+certifi
+charset-normalizer
+idna
+resolvelib
+cffi
+cryptography
